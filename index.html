@@ -63,6 +63,7 @@ const DOW = '日一二三四五六';
 
 let profile=null, employees=[], depts=[], empId=null, empName=null, myDeptId=null;
 let CY=0, CM=0, schedDoc=null;
+let isManager=false, viewDept=null;
 const $app = document.getElementById('app');
 function esc(s){ return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function nameOf(id){ const e=employees.find(x=>x.id===id); return e?e.name:id; }
@@ -90,7 +91,7 @@ function showBoot(html,isErr){ $app.innerHTML=`<div class="${isErr?'msg err':'lo
   } catch(e){ showBoot('讀取資料失敗：'+esc(e.message||e), true); }
 })();
 
-function setEmp(id){ empId=id; empName=nameOf(id); const e=employees.find(x=>x.id===id); myDeptId=e?e.deptId:null; }
+function setEmp(id){ empId=id; empName=nameOf(id); const e=employees.find(x=>x.id===id); myDeptId=e?e.deptId:null; isManager=!!(e&&e.role==='manager'); viewDept=isManager?'all':myDeptId; }
 
 async function loadSchedule(){
   schedDoc=null;
@@ -128,20 +129,30 @@ function renderBind(){
 
 function render(){
   const deptName = (depts.find(d=>d.id===myDeptId)||{}).name || '我的部門';
+  const title = isManager ? '全部班表' : (deptName + '・班表');
+  const deptFilter = isManager ? `
+      <div style="margin-bottom:10px">
+        <select class="name-select" id="deptSel">
+          <option value="all">全部部門</option>
+          ${depts.map(d=>`<option value="${d.id}" ${d.id===viewDept?'selected':''}>${esc(d.name)}</option>`).join('')}
+        </select>
+      </div>` : '';
   $app.innerHTML = `
-    <h1>${esc(deptName)}・班表</h1>
-    <div class="sub">${esc(empName)}（會以底色標出你的班）</div>
+    <h1>${esc(title)}</h1>
+    <div class="sub">${esc(empName)}${isManager?'（管理者・可看全部部門）':'（會以底色標出你的班）'}</div>
     <div class="card">
       <div class="monthbar">
         <button class="navbtn" id="prev">◀ 上月</button>
         <div class="m">${CY} 年 ${CM+1} 月</div>
         <button class="navbtn" id="next">下月 ▶</button>
       </div>
+      ${deptFilter}
       <div id="body"></div>
     </div>
     <div class="foot">此為已發布班表；如有異動以主管公告為準。</div>`;
   document.getElementById('prev').onclick=async()=>{ CM--; if(CM<0){CM=11;CY--;} await loadSchedule(); render(); };
   document.getElementById('next').onclick=async()=>{ CM++; if(CM>11){CM=0;CY++;} await loadSchedule(); render(); };
+  if (isManager){ const ds=document.getElementById('deptSel'); if(ds) ds.onchange=e=>{ viewDept=e.target.value; renderBody(); }; }
   renderBody();
 }
 
@@ -153,8 +164,9 @@ function renderBody(){
   }
   const data = schedDoc.data;
   const nDays = daysIn(CY, CM);
-  const deptEmps = employees.filter(e => e.deptId===myDeptId && e.active!==false);
-  if (!deptEmps.length){ body.innerHTML = `<div class="msg">查無同部門員工資料</div>`; return; }
+  let deptsToShow;
+  if (isManager) deptsToShow = (viewDept==='all') ? depts : depts.filter(d=>d.id===viewDept);
+  else deptsToShow = depts.filter(d=>d.id===myDeptId);
 
   // 表頭：日期 + 星期
   let head = '<th class="colname">姓名</th>';
@@ -163,22 +175,28 @@ function renderBody(){
     const cls = w===0?'sun':w===6?'sat':'';
     head += `<th class="${cls}">${d}<br><span style="font-size:10px">${DOW[w]}</span></th>`;
   }
-  // 每人一列
-  let rows = '';
-  deptEmps.forEach(emp => {
-    const isMe = emp.id===empId;
-    let tds = `<td class="colname">${esc(emp.name)}</td>`;
-    for (let d=1; d<=nDays; d++){
-      const c = (data[emp.id]||{})[dstr(CY,CM,d)];
-      const code = c ? (c.code||'') : '';
-      const isLeave = c && (c.type==='leave' || LEAVE_CODES.has(code));
-      tds += `<td><span class="${isLeave?'cell-leave':'cell-work'}" style="display:inline-block;min-width:30px;padding:2px 3px">${esc(code)||'·'}</span></td>`;
-    }
-    rows += `<tr class="${isMe?'me':''}">${tds}</tr>`;
+
+  let sections = '';
+  deptsToShow.forEach(dept => {
+    const deptEmps = employees.filter(e => e.deptId===dept.id && e.active!==false);
+    if (!deptEmps.length) return;
+    let rows = '';
+    deptEmps.forEach(emp => {
+      const isMe = emp.id===empId;
+      let tds = `<td class="colname">${esc(emp.name)}</td>`;
+      for (let d=1; d<=nDays; d++){
+        const c = (data[emp.id]||{})[dstr(CY,CM,d)];
+        const code = c ? (c.code||'') : '';
+        const isLeave = c && (c.type==='leave' || LEAVE_CODES.has(code));
+        tds += `<td><span class="${isLeave?'cell-leave':'cell-work'}" style="display:inline-block;min-width:30px;padding:2px 3px">${esc(code)||'·'}</span></td>`;
+      }
+      rows += `<tr class="${isMe?'me':''}">${tds}</tr>`;
+    });
+    const heading = (isManager && viewDept==='all') ? `<div style="font-weight:700;font-size:14px;margin:10px 0 6px">${esc(dept.name)}</div>` : '';
+    sections += heading + `<div class="scroll" style="margin-bottom:6px"><table class="sched"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
   });
-  body.innerHTML = `
-    <div class="scroll"><table class="sched"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="legend">紅底＝休假（例/休/國/年…）；其餘為上班班別時間。你的那一列以藍底標示。左右滑動可看整個月。</div>`;
+  if (!sections){ body.innerHTML = `<div class="msg">查無員工班表資料</div>`; return; }
+  body.innerHTML = sections + `<div class="legend">紅底＝休假（例/休/國/年…）；其餘為上班班別時間。${isManager?'':'你的那一列以藍底標示。'}左右滑動可看整個月。</div>`;
 }
 </script>
 </body>
