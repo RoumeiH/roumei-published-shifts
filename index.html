@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>我的班表</title>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font-family:-apple-system,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif; background:#f0f2f5; color:#1a1a2e; }
+  .wrap { max-width:900px; margin:0 auto; padding:14px 12px 40px; }
+  h1 { font-size:18px; margin:2px 0; }
+  .sub { font-size:13px; color:#6b7280; margin-bottom:12px; }
+  .card { background:#fff; border-radius:14px; padding:12px; margin-bottom:12px; box-shadow:0 1px 4px rgba(0,0,0,.06); }
+  .monthbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .monthbar .m { font-size:16px; font-weight:700; }
+  .navbtn { border:1px solid #d1d5db; background:#fff; border-radius:8px; padding:6px 14px; font-size:15px; cursor:pointer; }
+  .name-select { width:100%; padding:11px; font-size:15px; border:1px solid #d1d5db; border-radius:10px; background:#fff; }
+  .btn { width:100%; padding:13px; font-size:15px; font-weight:700; border:none; border-radius:12px; background:#6366f1; color:#fff; cursor:pointer; margin-top:10px; }
+  .loading, .msg { text-align:center; padding:36px 14px; color:#6b7280; font-size:14px; }
+  .err { color:#dc2626; }
+  .scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; border:1px solid #eef0f3; border-radius:10px; }
+  table.sched { border-collapse:separate; border-spacing:0; font-size:12px; }
+  table.sched th, table.sched td { padding:5px 4px; text-align:center; white-space:nowrap; border-bottom:1px solid #f0f0f0; }
+  table.sched thead th { background:#fafafa; position:sticky; top:0; }
+  .colname { position:sticky; left:0; background:#fff; text-align:left !important; font-weight:600; min-width:64px; box-shadow:1px 0 0 #eef0f3; z-index:1; }
+  thead .colname { background:#fafafa; z-index:2; }
+  .sun { color:#ef4444; } .sat { color:#3b82f6; }
+  tr.me td { background:#eef2ff; }
+  tr.me .colname { background:#e0e7ff; color:#3730a3; }
+  .cell-leave { background:#fee2e2; color:#b91c1c; border-radius:5px; font-weight:700; }
+  .cell-work { color:#374151; }
+  .legend { font-size:11px; color:#9ca3af; margin-top:8px; line-height:1.7; }
+  .foot { font-size:11px; color:#9ca3af; text-align:center; margin-top:16px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="loading" id="boot">載入中…</div></div>
+
+<script>
+// ── 設定 ─────────────────────────────────────────────
+const LIFF_ID = "2010583527-QOW49P3K";   // 看班表 LIFF
+const firebaseConfig = {
+  apiKey: "AIzaSyB9LgyqQCGjcAiWr4AZjarD8U-Um9lm9Hg",
+  authDomain: "hotel-shift-8fc12.firebaseapp.com",
+  projectId: "hotel-shift-8fc12",
+  storageBucket: "hotel-shift-8fc12.firebasestorage.app",
+  messagingSenderId: "676892573469",
+  appId: "1:676892573469:web:f14bb143a7f6fe5d662bf4"
+};
+const LEAVE_CODES = new Set(['例','休','國','年','病','事','特','曠','公','喪','婚','產','陪','生理']);
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+const pad = n => String(n).padStart(2,'0');
+const keyOf = (y,m) => `${y}-${pad(m+1)}`;
+const daysIn = (y,m) => new Date(y, m+1, 0).getDate();
+const dstr = (y,m,d) => `${y}-${pad(m+1)}-${pad(d)}`;
+const DOW = '日一二三四五六';
+
+let profile=null, employees=[], depts=[], empId=null, empName=null, myDeptId=null;
+let CY=0, CM=0, schedDoc=null;
+const $app = document.getElementById('app');
+function esc(s){ return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function nameOf(id){ const e=employees.find(x=>x.id===id); return e?e.name:id; }
+function showBoot(html,isErr){ $app.innerHTML=`<div class="${isErr?'msg err':'loading'}">${html}</div>`; }
+
+(async function start(){
+  try {
+    await liff.init({ liffId: LIFF_ID });
+    if (!liff.isLoggedIn()) { liff.login(); return; }
+    profile = await liff.getProfile();
+  } catch(e){ showBoot('LINE 初始化失敗：'+esc(e.message||e)+'<br><br>請從 LINE 內開啟本頁面。', true); return; }
+  try {
+    const snap = await db.collection('config').doc('main').get();
+    const d = snap.exists ? snap.data() : {};
+    employees = d.employees || [];
+    depts = d.depts || [];
+    const bind = await db.collection('lineBindings').doc(profile.userId).get();
+    if (bind.exists && bind.data().empId && employees.some(e=>e.id===bind.data().empId)) {
+      setEmp(bind.data().empId);
+      const now = new Date(); CY=now.getFullYear(); CM=now.getMonth();
+      await loadSchedule(); render();
+    } else {
+      renderBind();
+    }
+  } catch(e){ showBoot('讀取資料失敗：'+esc(e.message||e), true); }
+})();
+
+function setEmp(id){ empId=id; empName=nameOf(id); const e=employees.find(x=>x.id===id); myDeptId=e?e.deptId:null; }
+
+async function loadSchedule(){
+  schedDoc=null;
+  try {
+    const snap = await db.collection('schedules').doc(keyOf(CY,CM)).get();
+    if (snap.exists) schedDoc = snap.data();
+  } catch(e){ /* 忽略 */ }
+}
+
+// 第一次使用：選名字綁定（與指定假表單共用綁定）
+function renderBind(){
+  const opts = employees.filter(e=>e.active!==false).map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('');
+  $app.innerHTML = `
+    <h1>我的班表</h1>
+    <div class="sub">第一次使用，請選擇你的名字（只需一次）</div>
+    <div class="card">
+      <div style="font-size:14px;margin-bottom:8px">LINE：<b>${esc(profile.displayName)}</b></div>
+      <select class="name-select" id="pick"><option value="">— 請選擇你的名字 —</option>${opts}</select>
+      <button class="btn" id="bindBtn" disabled>確認綁定</button>
+    </div>`;
+  const pick=document.getElementById('pick'), btn=document.getElementById('bindBtn');
+  pick.onchange=()=>btn.disabled=!pick.value;
+  btn.onclick=async()=>{
+    btn.disabled=true; btn.textContent='綁定中…';
+    try {
+      setEmp(pick.value);
+      await db.collection('lineBindings').doc(profile.userId).set({
+        empId, name:empName, lineName:profile.displayName, lineUserId:profile.userId, boundAt:new Date().toISOString()
+      });
+      const now=new Date(); CY=now.getFullYear(); CM=now.getMonth();
+      await loadSchedule(); render();
+    } catch(e){ btn.disabled=false; btn.textContent='確認綁定'; alert('綁定失敗：'+(e.message||e)); }
+  };
+}
+
+function render(){
+  const deptName = (depts.find(d=>d.id===myDeptId)||{}).name || '我的部門';
+  $app.innerHTML = `
+    <h1>${esc(deptName)}・班表</h1>
+    <div class="sub">${esc(empName)}（會以底色標出你的班）</div>
+    <div class="card">
+      <div class="monthbar">
+        <button class="navbtn" id="prev">◀ 上月</button>
+        <div class="m">${CY} 年 ${CM+1} 月</div>
+        <button class="navbtn" id="next">下月 ▶</button>
+      </div>
+      <div id="body"></div>
+    </div>
+    <div class="foot">此為已發布班表；如有異動以主管公告為準。</div>`;
+  document.getElementById('prev').onclick=async()=>{ CM--; if(CM<0){CM=11;CY--;} await loadSchedule(); render(); };
+  document.getElementById('next').onclick=async()=>{ CM++; if(CM>11){CM=0;CY++;} await loadSchedule(); render(); };
+  renderBody();
+}
+
+function renderBody(){
+  const body = document.getElementById('body');
+  if (!schedDoc || schedDoc.schedStatus !== 'published' || !schedDoc.data){
+    body.innerHTML = `<div class="msg">📭 本月班表尚未發布</div>`;
+    return;
+  }
+  const data = schedDoc.data;
+  const nDays = daysIn(CY, CM);
+  const deptEmps = employees.filter(e => e.deptId===myDeptId && e.active!==false);
+  if (!deptEmps.length){ body.innerHTML = `<div class="msg">查無同部門員工資料</div>`; return; }
+
+  // 表頭：日期 + 星期
+  let head = '<th class="colname">姓名</th>';
+  for (let d=1; d<=nDays; d++){
+    const w = new Date(CY,CM,d).getDay();
+    const cls = w===0?'sun':w===6?'sat':'';
+    head += `<th class="${cls}">${d}<br><span style="font-size:10px">${DOW[w]}</span></th>`;
+  }
+  // 每人一列
+  let rows = '';
+  deptEmps.forEach(emp => {
+    const isMe = emp.id===empId;
+    let tds = `<td class="colname">${esc(emp.name)}</td>`;
+    for (let d=1; d<=nDays; d++){
+      const c = (data[emp.id]||{})[dstr(CY,CM,d)];
+      const code = c ? (c.code||'') : '';
+      const isLeave = c && (c.type==='leave' || LEAVE_CODES.has(code));
+      tds += `<td><span class="${isLeave?'cell-leave':'cell-work'}" style="display:inline-block;min-width:30px;padding:2px 3px">${esc(code)||'·'}</span></td>`;
+    }
+    rows += `<tr class="${isMe?'me':''}">${tds}</tr>`;
+  });
+  body.innerHTML = `
+    <div class="scroll"><table class="sched"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="legend">紅底＝休假（例/休/國/年…）；其餘為上班班別時間。你的那一列以藍底標示。左右滑動可看整個月。</div>`;
+}
+</script>
+</body>
+</html>
