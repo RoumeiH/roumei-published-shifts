@@ -203,7 +203,7 @@ function renderBody(){
         const code = c ? (c.code||'') : '';
         const isLeave = c && (c.type==='leave' || LEAVE_CODES.has(code));
         if (isLeave){
-          const st = leaveStyle(code);
+          const st = (c.source === 'request') ? {bg:'#fecdd3', c:'#9f1239'} : leaveStyle(code);  // 員工指定假=玫紅(同線上班表)，其餘休假=灰
           tds += `<td><span style="display:inline-block;min-width:30px;padding:2px 3px;border-radius:5px;font-weight:700;background:${st.bg};color:${st.c}">${esc(code)}</span></td>`;
         } else {
           tds += `<td><span class="cell-work" style="display:inline-block;min-width:30px;padding:2px 3px">${esc(code)||'·'}</span></td>`;
