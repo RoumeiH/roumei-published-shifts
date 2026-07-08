@@ -61,7 +61,7 @@ const daysIn = (y,m) => new Date(y, m+1, 0).getDate();
 const dstr = (y,m,d) => `${y}-${pad(m+1)}-${pad(d)}`;
 const DOW = '日一二三四五六';
 
-let profile=null, employees=[], depts=[], empId=null, empName=null, myDeptId=null;
+let profile=null, employees=[], depts=[], positions=[], empOrder=[], empId=null, empName=null, myDeptId=null;
 let CY=0, CM=0, schedDoc=null;
 let isManager=false, viewDept=null;
 const $app = document.getElementById('app');
@@ -80,6 +80,8 @@ function showBoot(html,isErr){ $app.innerHTML=`<div class="${isErr?'msg err':'lo
     const d = snap.exists ? snap.data() : {};
     employees = d.employees || [];
     depts = d.depts || [];
+    positions = d.positions || [];
+    try { const os = await db.collection('config').doc('empOrder').get(); if (os.exists && Array.isArray(os.data().order)) empOrder = os.data().order; } catch(e){}
     const bind = await db.collection('lineBindings').doc(profile.userId).get();
     if (bind.exists && bind.data().empId && employees.some(e=>e.id===bind.data().empId)) {
       setEmp(bind.data().empId);
@@ -178,7 +180,10 @@ function renderBody(){
 
   let sections = '';
   deptsToShow.forEach(dept => {
-    const deptEmps = employees.filter(e => e.deptId===dept.id && e.active!==false);
+    const posSort = id => { const p = positions.find(x=>x.id===id); return p ? (p.sortOrder??9999) : 9999; };
+    const ordIdx = id => { const i = empOrder.indexOf(id); return i<0 ? 9999 : i; };
+    const deptEmps = employees.filter(e => e.deptId===dept.id && e.active!==false)
+      .sort((a,b) => (posSort(a.positionId)-posSort(b.positionId)) || (ordIdx(a.id)-ordIdx(b.id)));
     if (!deptEmps.length) return;
     let rows = '';
     deptEmps.forEach(emp => {
